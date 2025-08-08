@@ -1,7 +1,27 @@
-body{margin:0;background:#1b1b1b;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#fff}
-canvas{display:block;margin:0 auto;background:linear-gradient(#7bc8f6,#bde4ff) fixed;border:2px solid #111;image-rendering:pixelated;image-rendering:crisp-edges}
-.hud{position:fixed;left:0;right:0;top:8px;display:flex;gap:12px;justify-content:center;align-items:center;pointer-events:none}
-#hearts{font-size:20px;letter-spacing:2px;text-shadow:0 1px 0 #0006}
-#msg{font-weight:700;text-shadow:0 2px 4px #0009}
-button{pointer-events:auto;background:#222;border:1px solid #555;color:#fff;padding:8px 12px;border-radius:8px;cursor:pointer}
-.hidden{display:none}
+body {
+    margin: 0;
+    background: #222;
+    color: #fff
+}
+
+canvas {
+    display: block;
+    margin: 0 auto;
+    background: #7bc8f6;
+    border: 2px solid #111;
+    image-rendering: pixelated
+}
+
+.hud {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 8px;
+    display: flex;
+    gap: 12px;
+    justify-content: center
+}
+
+.hidden {
+    display: none
+}
