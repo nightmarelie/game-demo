@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pixel Hero: Side Scroller</title>
+  <style>
+    html, body { margin:0; padding:0; background:#1b1b1b; color:#eee; font-family: system-ui, sans-serif; }
+    #hud { position: absolute; left: 12px; top: 10px; z-index: 2; background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px; }
+    canvas { display:block; margin:0 auto; background: linear-gradient(#87CEEB,#7ab57a); image-rendering: pixelated; }
+    .footer { text-align:center; font-size: 12px; opacity: 0.8; padding: 6px 0 10px; }
+    a { color: #6bd4ff; }
+  </style>
+</head>
+<body>
+  <div id="hud">Move: ← →, Jump: Space, Attack: Z</div>
+  <canvas id="game" width="960" height="540"></canvas>
+  <div class="footer">Pixel Hero demo — add tiles, enemies, and more easily in <code>js/game.js</code></div>
+  <script src="js/game.js"></script>
+</body>
+</html>
