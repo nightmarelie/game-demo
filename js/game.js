@@ -1,348 +1,436 @@
-// Pixel Hero Side Scroller — uses Canvas
-// Controls: Left/Right arrows to move, Space to jump, Z to attack
+/* Pixel Scroller — drop-in game using sprite sheets.
+ * Place your images at ./assets/hero.png and ./assets/goblin.png
+ * Tweak the CONFIG at the top to match your exact sheet layouts.
+ * Works best when served via file:// or a simple http server.
+*/
 
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+const CONFIG = {
+    canvas: {w: 960, h: 540, scale: 2},
+    gravity: 1800,
+    groundY: 420,
+    // --- HERO SPRITE SHEET ---
+    hero: {
+        url: "assets/hero.png",
+        cols: 8, rows: 8,          // 1024 / 8 = 128px cells ✅
+        frameW: null, frameH: null,
+        fps: {idle: 8, run: 12, jump: 8, attack: 14, crouch: 8, hurt: 10, death: 10, victory: 8},
+        anim: {
+            // adjust if your sheet differs, but this works with the one you sent
+            idle: [0, 0, 7],
+            run: [1, 0, 7],
+            jump: [2, 0, 5],
+            attack: [3, 0, 7],
+            crouch: [4, 0, 3],
+            hurt: [5, 0, 3],
+            death: [6, 0, 7],
+            victory: [7, 0, 5]
+        },
+        speed: 220, jumpV: 650,
+        hitbox: {x: 12, y: 10, w: 28, h: 44},
+        attackBox: {x: 30, y: 10, w: 34, h: 40}
+    },
 
-// --- CONFIG ---
-// Sprite sheet assumed 4 columns x 6 rows, 32x32px frames, matching the generated sheet layout.
-// If your sheet differs, tweak FRAME_W/H, COLS, ROWS and row assignments below.
-const FRAME_W = 32;
-const FRAME_H = 32;
-const SCALE = 3; // render scale
-const COLS = 4;
-const ROWS = 6;
-
-// Animation rows (by observation of the generated sheet)
-// 0: idle (4 frames)
-// 1: walk/run (4 frames)
-// 2: jump / air (4 frames)
-// 3: attack (slash) (4 frames)
-// 4: crouch / low attack (4 frames)
-// 5: death (4 frames)
-const ROW_IDLE = 0;
-const ROW_WALK = 1;
-const ROW_JUMP = 2;
-const ROW_ATTACK = 3;
-const ROW_CROUCH = 4;
-const ROW_DEATH = 5;
-
-// World/physics
-const GRAVITY = 1600;
-const MOVE_SPEED = 220;
-const JUMP_VY = -520;
-const GROUND_Y = 380; // baseline ground
-const FRICTION = 0.85;
-
-// Gameplay
-let keys = {};
-let lastTime = 0;
-
-// Load assets
-const heroImg = new Image();
-heroImg.src = 'assets/hero.png';
-
-// Hero entity
-const hero = {
-  x: 120,
-  y: GROUND_Y,
-  vx: 0,
-  vy: 0,
-  w: FRAME_W * SCALE,
-  h: FRAME_H * SCALE,
-  face: 1, // 1 right, -1 left
-  hp: 5,
-  maxHp: 5,
-  onGround: true,
-  attacking: false,
-  attackTimer: 0,
-  dead: false,
-  state: 'idle', // idle, walk, jump, attack, death
-  frame: 0,
-  frameTimer: 0,
-  frameDelay: 0.12,
+// --- GOBLIN ENEMY SHEET ---
+    goblin: {
+        url: "assets/goblin.png",
+        cols: 8, rows: 8,          // also 128px cells ✅
+        frameW: null, frameH: null,
+        fps: {idle: 8, walk: 10, attack: 10, hurt: 10, death: 10},
+        anim: {
+            // based on your goblin sheet rows
+            idle: [0, 0, 5],
+            walk: [1, 0, 5],
+            attack: [2, 0, 5],
+            hurt: [3, 0, 3],
+            death: [4, 0, 5]        // if your death is lower, try row 5 instead
+        },
+        speed: 120,
+        hitbox: {x: 12, y: 8, w: 28, h: 40},
+        attackBox: {x: 24, y: 8, w: 30, h: 36}
+    }
 };
 
-// Simple platform list (rects)
-const platforms = [
-  {x: 0, y: GROUND_Y + hero.h, w: canvas.width, h: 100}, // ground
-  {x: 260, y: 320, w: 140, h: 20},
-  {x: 520, y: 280, w: 160, h: 20},
-  {x: 760, y: 350, w: 120, h: 20},
-];
-
-// Enemy definition — simple "slime" that patrols a range
-function makeSlime(x1, x2, y) {
-  return {
-    type: 'slime',
-    x: (x1 + x2) / 2,
-    y,
-    vx: 60,
-    dir: 1,
-    patrolMin: x1,
-    patrolMax: x2,
-    w: 28 * SCALE/2, // simple body size
-    h: 18 * SCALE/2,
-    hp: 3,
-    alive: true,
-    hurtTimer: 0,
-  };
+// ---------- Simple loader ----------
+function loadImage(src) {
+    return new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = src;
+    });
 }
 
-const enemies = [
-  makeSlime(300, 460, GROUND_Y + hero.h - 12),
-  makeSlime(520, 680, 280 + 20 - 12),
-  makeSlime(760, 860, 350 + 20 - 12),
-];
-
-// Input
-addEventListener('keydown', (e) => { keys[e.code] = true; });
-addEventListener('keyup',   (e) => { keys[e.code] = false; });
-
-// Helpers
-function aabb(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-}
-
-function rectAt(entity) {
-  return {x: entity.x, y: entity.y, w: entity.w, h: entity.h};
-}
-
-function applyPlatforms(entity) {
-  // very simple vertical collision only
-  entity.onGround = false;
-  let nextY = entity.y + entity.vy * dt;
-  let rect = {x: entity.x, y: nextY, w: entity.w, h: entity.h};
-  for (const p of platforms) {
-    if (aabb(rect, p)) {
-      // coming from above?
-      if (entity.vy > 0 && entity.y + entity.h <= p.y + 10) {
-        nextY = p.y - entity.h;
-        entity.vy = 0;
-        entity.onGround = true;
-      }
+// ---------- Sprite helper ----------
+class Sprite {
+    constructor(img, opts) {
+        this.img = img;
+        const {cols = null, rows = null, frameW = null, frameH = null} = opts || {};
+        if (frameW && frameH) {
+            this.frameW = frameW;
+            this.frameH = frameH;
+            this.cols = Math.floor(img.width / frameW);
+            this.rows = Math.floor(img.height / frameH);
+        } else {
+            this.cols = cols;
+            this.rows = rows;
+            this.frameW = Math.floor(img.width / cols);
+            this.frameH = Math.floor(img.height / rows);
+        }
     }
-  }
-  entity.y = nextY;
+
+    draw(ctx, col, row, dx, dy, dw, dh, flip = false) {
+        const sx = this.frameW * col;
+        const sy = this.frameH * row;
+        ctx.save();
+        if (flip) {
+            ctx.translate(dx + dw, dy);
+            ctx.scale(-1, 1);
+            dx = 0;
+            dy = 0;
+        }
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(this.img, sx, sy, this.frameW, this.frameH, dx, dy, dw, dh);
+        ctx.restore();
+    }
 }
 
-// Attack hitbox in front of hero
-function getHeroAttackHitbox() {
-  const reach = 26 * SCALE;
-  const w = 30;
-  const h = 26;
-  const x = hero.face === 1 ? (hero.x + hero.w - 20) : (hero.x - reach);
-  const y = hero.y + hero.h/2 - h/2;
-  return {x, y, w: reach, h};
+// ---------- Animator ----------
+class Animator {
+    constructor(def, fps) {
+        this.def = def;
+        this.fps = fps;
+        this.set("idle");
+    }
+
+    set(name) {
+        if (this.name === name) return;
+        this.name = name;
+        const [row, start, end] = this.def[name];
+        this.row = row;
+        this.start = start;
+        this.end = end;
+        this.col = start;
+        this.timer = 0;
+        this.rate = 1 / Math.max(1, (this.fps[name] || 8));
+        this.done = false;
+    }
+
+    update(dt) {
+        this.timer += dt;
+        const loop = !(this.name === "death" || this.name === "hurt" || this.name === "attack");
+        while (this.timer >= this.rate) {
+            this.timer -= this.rate;
+            if (this.col < this.end) this.col++;
+            else {
+                this.done = !loop;
+                this.col = loop ? this.start : this.end;
+            }
+        }
+    }
 }
 
-// Update
-let dt = 0;
-function update(timestamp) {
-  dt = (timestamp - lastTime) / 1000;
-  if (!isFinite(dt) || dt > 0.05) dt = 0.016;
-  lastTime = timestamp;
+// ---------- Entities ----------
+class Entity {
+    constructor(sprite, cfg) {
+        this.sprite = sprite;
+        this.cfg = cfg;
+        this.w = sprite.frameW;
+        this.h = sprite.frameH;
+        this.scale = 2; // can tweak
+        this.x = 100;
+        this.y = CONFIG.groundY - this.h * this.scale;
+        this.vx = 0;
+        this.vy = 0;
+        this.dir = 1;
+        this.anim = new Animator(cfg.anim, cfg.fps);
+        this.state = "idle";
+        this.hp = 3;
+    }
 
-  if (hero.dead) {
-    hero.state = 'death';
-  } else {
-    // Horizontal input
+    box(rect) {
+        const s = this.scale;
+        return {x: this.x + rect.x * s, y: this.y + rect.y * s, w: rect.w * s, h: rect.h * s};
+    }
+
+    draw(ctx) {
+        const dw = this.w * this.scale, dh = this.h * this.scale;
+        this.sprite.draw(ctx, this.anim.col, this.anim.row, this.x, this.y, dw, dh, this.dir < 0);
+    }
+
+    update(dt) {
+        this.anim.update(dt);
+    }
+}
+
+// ---------- Game state ----------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const heartsEl = document.getElementById("hearts");
+const msgEl = document.getElementById("msg");
+const restartBtn = document.getElementById("restart");
+let keys = {};
+window.addEventListener("keydown", e => keys[e.code] = true);
+window.addEventListener("keyup", e => keys[e.code] = false);
+
+let hero, goblin, heroSprite, goblinSprite;
+let platforms = [
+    {x: 0, y: CONFIG.groundY + 64, w: canvas.width, h: 100, color: "#3a2a16"}, // ground block
+    {x: 180, y: 340, w: 160, h: 20, color: "#5d3b1a"},
+    {x: 420, y: 300, w: 140, h: 20, color: "#5d3b1a"},
+    {x: 680, y: 260, w: 160, h: 20, color: "#5d3b1a"}
+];
+
+function AABB(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+}
+
+async function boot() {
+    msgEl.textContent = "Loading...";
+    const heroImg = await loadImage(CONFIG.hero.url);
+    const gobImg = await loadImage(CONFIG.goblin.url);
+
+    heroSprite = new Sprite(heroImg, {frameW: 128, frameH: 128});
+    goblinSprite = new Sprite(gobImg, {frameW: 128, frameH: 128});
+
+
+    // expose actual sizes
+    CONFIG.hero.frameW = heroSprite.frameW;
+    CONFIG.hero.frameH = heroSprite.frameH;
+    CONFIG.goblin.frameW = goblinSprite.frameW;
+    CONFIG.goblin.frameH = goblinSprite.frameH;
+
+    hero = new Entity(heroSprite, CONFIG.hero);
+    hero.scale = 2;
+    hero.x = 80;
+
+    goblin = new Entity(goblinSprite, CONFIG.goblin);
+    goblin.scale = 2;
+    goblin.x = 640;
+    goblin.hp = 3;
+    goblin.state = "walk";
+    goblin.anim.set("walk");
+
+    msgEl.textContent = "Arrow keys to move, Space to jump, K to attack";
+    restartBtn.classList.add("hidden");
+    heartsEl.textContent = "❤❤❤";
+    requestAnimationFrame(loop);
+}
+
+function setHeroState(name) {
+    hero.state = name;
+    hero.anim.set(name);
+}
+
+function setGoblinState(name) {
+    goblin.state = name;
+    goblin.anim.set(name);
+}
+
+function handleHero(dt) {
+    const H = CONFIG.hero;
+    const speed = H.speed;
+    let onGround = false;
+
+    // Inputs
     let moving = false;
-    if (keys['ArrowLeft']) {
-      hero.vx = -MOVE_SPEED;
-      hero.face = -1;
-      moving = true;
-    } else if (keys['ArrowRight']) {
-      hero.vx = MOVE_SPEED;
-      hero.face = 1;
-      moving = true;
-    } else {
-      hero.vx *= FRICTION;
-      if (Math.abs(hero.vx) < 2) hero.vx = 0;
+    if (keys["ArrowLeft"]) {
+        hero.vx = -speed;
+        hero.dir = -1;
+        moving = true;
     }
+    if (keys["ArrowRight"]) {
+        hero.vx = speed;
+        hero.dir = 1;
+        moving = true;
+    }
+    if (!moving) hero.vx = 0;
 
     // Jump
-    if (keys['Space'] && hero.onGround) {
-      hero.vy = JUMP_VY;
-      hero.onGround = false;
+    if (keys["Space"] && hero._canJump) {
+        hero.vy = -H.jumpV;
+        hero._canJump = false;
+        setHeroState("jump");
+    }
+
+    // Apply gravity & move
+    hero.vy += CONFIG.gravity * dt;
+    hero.x += hero.vx * dt;
+    hero.y += hero.vy * dt;
+
+    // Platform collisions (simple AABB, resolve Y)
+    const feet = {x: hero.x + 10, y: hero.y + hero.h * hero.scale - 1, w: hero.w * hero.scale - 20, h: 2};
+    for (const p of platforms) {
+        // fall onto platform
+        if (feet.y < p.y && feet.y + hero.vy * dt >= p.y && feet.x < p.x + p.w && feet.x + feet.w > p.x) {
+            // Land
+            hero.y = p.y - hero.h * hero.scale;
+            hero.vy = 0;
+            onGround = true;
+        }
+    }
+    if (onGround) {
+        hero._canJump = true;
+        if (moving && hero.state !== "attack") setHeroState("run");
+        if (!moving && hero.state !== "attack") setHeroState("idle");
+    } else {
+        if (hero.state !== "attack") setHeroState("jump");
     }
 
     // Attack
-    if (keys['KeyZ'] && !hero.attacking && !hero.dead) {
-      hero.attacking = true;
-      hero.attackTimer = 0.28; // attack window
-      hero.state = 'attack';
+    if (keys["KeyK"] && hero._atkCooldown <= 0 && hero.state !== "death") {
+        hero._atkCooldown = 0.5;
+        setHeroState("attack");
+    }
+    if (hero._atkCooldown > 0) {
+        hero._atkCooldown -= dt;
     }
 
-    // Physics
-    hero.x += hero.vx * dt;
-    hero.vy += GRAVITY * dt;
-    applyPlatforms(hero);
+    // During attack frames, apply damage if overlapping attack box
+    if (hero.state === "attack") {
+        // mid-window: use middle third of animation
+        const [row, s, e] = H.anim.attack;
+        const progress = (hero.anim.col - s) / Math.max(1, (e - s));
+        if (progress > 0.3 && progress < 0.8) {
+            const atk = hero.box(H.attackBox);
+            const gHit = goblin.box(CONFIG.goblin.hitbox);
+            if (!goblin._iframes && AABB(atk, gHit) && goblin.state !== "death") {
+                goblin.hp -= 1;
+                goblin._iframes = 0.4;
+                if (goblin.hp <= 0) {
+                    setGoblinState("death");
+                } else setGoblinState("hurt");
+            }
+        }
+        if (hero.anim.done) {
+            setHeroState(onGround ? (moving ? "run" : "idle") : "jump");
+        }
+    }
+}
 
-    // Clamp to world bounds
-    hero.x = Math.max(0, Math.min(canvas.width - hero.w, hero.x));
+function handleGoblin(dt) {
+    if (goblin.state === "death") {
+        if (goblin.anim.done) msgEl.textContent = "You win!";
+        return;
+    }
 
-    // State machine
-    if (!hero.attacking) {
-      if (!hero.onGround) hero.state = 'jump';
-      else if (moving) hero.state = 'walk';
-      else hero.state = 'idle';
+    const dx = hero.x - goblin.x;
+    const dist = Math.abs(dx);
+    const dir = Math.sign(dx) || 1;
+    goblin.dir = dir;
+
+    if (goblin._iframes > 0) goblin._iframes -= dt;
+
+    // Simple AI: chase when close, otherwise patrol
+    if (dist < 260 && hero.state !== "death") {
+        // Attack when touching
+        const reach = goblin.box(CONFIG.goblin.attackBox);
+        const hbox = hero.box(CONFIG.hero.hitbox);
+        if (AABB(reach, hbox)) {
+            if (!goblin._atkTimer || goblin._atkTimer <= 0) {
+                setGoblinState("attack");
+                goblin._atkTimer = 0.8;
+                // damage hero at mid swing
+            }
+        } else {
+            // Walk toward
+            goblin.x += CONFIG.goblin.speed * dir * dt;
+            if (goblin.state !== "walk") setGoblinState("walk");
+        }
     } else {
-      hero.attackTimer -= dt;
-      if (hero.attackTimer <= 0) {
-        hero.attacking = false;
-      }
-    }
-  }
-
-  // Enemies update
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    // Patrol
-    e.x += e.vx * e.dir * dt;
-    if (e.x < e.patrolMin) { e.x = e.patrolMin; e.dir = 1; }
-    if (e.x + e.w > e.patrolMax) { e.x = e.patrolMax - e.w; e.dir = -1; }
-
-    // Simple gravity to keep them on their platform baseline
-    // (they're anchored to given y)
-    if (e.hurtTimer > 0) e.hurtTimer -= dt;
-
-    // Touch damage
-    const heroRect = rectAt(hero);
-    const eRect = rectAt(e);
-    if (!hero.dead && aabb(heroRect, eRect)) {
-      // knockback hero
-      hero.vx = (hero.x < e.x) ? -220 : 220;
-      hero.vy = -280;
-      hero.hp -= 1;
-      if (hero.hp <= 0) { hero.hp = 0; hero.dead = true; }
+        // idle
+        if (goblin.state !== "idle") setGoblinState("idle");
     }
 
-    // Hero attack hit
-    if (hero.attacking && hero.state === 'attack' && e.hurtTimer <= 0) {
-      const hb = getHeroAttackHitbox();
-      if (aabb(hb, eRect)) {
-        e.hp -= 1;
-        e.hurtTimer = 0.25;
-        // small knockback
-        e.x += (hero.face === 1 ? 18 : -18);
-        if (e.hp <= 0) { e.alive = false; }
-      }
+    // Resolve attack timing & hero damage
+    if (goblin._atkTimer > 0) {
+        goblin._atkTimer -= dt;
+        if (goblin._atkTimer < 0.4 && !goblin._didHit) { // strike moment
+            const reach = goblin.box(CONFIG.goblin.attackBox);
+            const hbox = hero.box(CONFIG.hero.hitbox);
+            if (AABB(reach, hbox) && hero.state !== "death") {
+                damageHero();
+                goblin._didHit = true;
+            }
+        }
+        if (goblin._atkTimer <= 0) {
+            goblin._didHit = false;
+            setGoblinState("idle");
+        }
     }
-  }
+}
 
-  // Animation frame control
-  hero.frameTimer += dt;
-  const frameCount = getFrameCount(hero.state);
-  const delay = hero.state === 'walk' ? 0.10 :
-                hero.state === 'attack' ? 0.08 :
-                hero.state === 'jump' ? 0.12 :
-                hero.state === 'death' ? 0.18 : 0.16;
-
-  if (hero.frameTimer >= delay) {
-    hero.frameTimer = 0;
-    if (hero.state === 'death') {
-      hero.frame = Math.min(hero.frame + 1, frameCount - 1);
+function damageHero() {
+    if (hero._iframes > 0) return;
+    hero._iframes = 0.8;
+    hero.hp -= 1;
+    heartsEl.textContent = "❤".repeat(Math.max(0, hero.hp));
+    setHeroState("hurt");
+    if (hero.hp <= 0) {
+        setHeroState("death");
+        msgEl.textContent = "You were defeated...";
+        restartBtn.classList.remove("hidden");
     } else {
-      hero.frame = (hero.frame + 1) % frameCount;
+        setTimeout(() => {
+            setHeroState("idle");
+        }, 350);
     }
-  }
 }
 
-function drawBackground() {
-  // simple parallax sky + hills
-  ctx.fillStyle = '#78c8ff';
-  ctx.fillRect(0,0,canvas.width,canvas.height);
-  // ground gradient is in CSS, we add a distant hill
-  ctx.fillStyle = '#6bb070';
-  ctx.fillRect(0, canvas.height-120, canvas.width, 120);
-
-  // Platforms
-  ctx.fillStyle = '#4e3a2a';
-  for (const p of platforms) {
-    ctx.fillRect(p.x, p.y, p.w, p.h);
-    ctx.fillStyle = '#6a4c38';
-    ctx.fillRect(p.x, p.y, p.w, 6);
-    ctx.fillStyle = '#4e3a2a';
-  }
+function drawBG() {
+    // parallax blobs
+    ctx.fillStyle = "#7bc8f6";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#a8e0ff";
+    for (let i = 0; i < 10; i++) {
+        ctx.fillRect(i * 120, 100 + Math.sin(i) * 12, 80, 16);
+    }
+    // platforms
+    for (const p of platforms) {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+    }
 }
 
-function drawHero() {
-  let row = ROW_IDLE;
-  if (hero.state === 'walk') row = ROW_WALK;
-  else if (hero.state === 'jump') row = ROW_JUMP;
-  else if (hero.state === 'attack') row = ROW_ATTACK;
-  else if (hero.state === 'death') row = ROW_DEATH;
+let last = 0;
 
-  const sx = hero.frame * FRAME_W;
-  const sy = row * FRAME_H;
-  const dx = hero.face === 1 ? hero.x : hero.x + hero.w;
-  const dw = hero.face === 1 ? hero.w : -hero.w;
+function loop(t) {
+    const dt = Math.min(1 / 30, (t - last) / 1000 || 0);
+    last = t;
+    // update
+    handleHero(dt);
+    handleGoblin(dt);
+    hero.update(dt);
+    goblin.update(dt);
 
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(heroImg, sx, sy, FRAME_W, FRAME_H, dx, hero.y, dw, hero.h);
-  ctx.restore();
+    // draw
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBG();
+    goblin.draw(ctx);
+    hero.draw(ctx);
 
-  // Debug: show attack hitbox during attack
-  // if (hero.attacking) {
-  //   const hb = getHeroAttackHitbox();
-  //   ctx.strokeStyle = '#fff';
-  //   ctx.strokeRect(hb.x, hb.y, hb.w, hb.h);
-  // }
+    requestAnimationFrame(loop);
 }
 
-function drawEnemies() {
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    // Draw simple slime as a blob
-    ctx.save();
-    ctx.fillStyle = e.hurtTimer > 0 ? '#ffaaaa' : '#66aa66';
-    ctx.fillRect(e.x, e.y, e.w, e.h);
-    // eyes
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(e.x + e.w*0.25, e.y + e.h*0.3, 4, 6);
-    ctx.fillRect(e.x + e.w*0.60, e.y + e.h*0.3, 4, 6);
-    ctx.restore();
-  }
-}
+restartBtn.addEventListener("click", () => {
+    setHeroState("idle");
+    hero.hp = 3;
+    heartsEl.textContent = "❤❤❤";
+    msgEl.textContent = "";
+    hero.x = 80;
+    hero.y = CONFIG.groundY - hero.h * hero.scale;
+    hero.vx = hero.vy = 0;
+    hero._iframes = 0;
+    goblin.hp = 3;
+    setGoblinState("walk");
+    goblin.x = 640;
+    goblin._iframes = 0;
+    goblin._atkTimer = 0;
+    goblin._didHit = false;
+    restartBtn.classList.add("hidden");
+});
 
-function drawHUD() {
-  // HP hearts
-  const heartSize = 14;
-  for (let i=0;i<hero.maxHp;i++) {
-    ctx.fillStyle = i < hero.hp ? '#ff4d6d' : '#333';
-    ctx.fillRect(12 + i*(heartSize+6), 12, heartSize, heartSize);
-  }
-}
-
-function render() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  drawBackground();
-  drawEnemies();
-  drawHero();
-  drawHUD();
-}
-
-// Main loop
-function loop(ts) {
-  update(ts);
-  render();
-  requestAnimationFrame(loop);
-}
-
-heroImg.onload = () => {
-  // Optionally: verify sprite dimensions
-  requestAnimationFrame((ts)=>{ lastTime = ts; requestAnimationFrame(loop); });
-};
-
-function getFrameCount(state) {
-  switch (state) {
-    case 'idle':   return 4;
-    case 'walk':   return 4;
-    case 'jump':   return 2; // only use first 2 frames
-    case 'attack': return 4;
-    case 'death':  return 4;
-    default:       return 1;
-  }
-}
+window.addEventListener("load", boot);
