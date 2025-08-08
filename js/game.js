@@ -233,7 +233,7 @@ function update(timestamp) {
 
   // Animation frame control
   hero.frameTimer += dt;
-  const frameCount = COLS; // each row has COLS frames
+  const frameCount = getFrameCount(hero.state);
   const delay = hero.state === 'walk' ? 0.10 :
                 hero.state === 'attack' ? 0.08 :
                 hero.state === 'jump' ? 0.12 :
@@ -335,3 +335,14 @@ heroImg.onload = () => {
   // Optionally: verify sprite dimensions
   requestAnimationFrame((ts)=>{ lastTime = ts; requestAnimationFrame(loop); });
 };
+
+function getFrameCount(state) {
+  switch (state) {
+    case 'idle':   return 4;
+    case 'walk':   return 4;
+    case 'jump':   return 2; // only use first 2 frames
+    case 'attack': return 4;
+    case 'death':  return 4;
+    default:       return 1;
+  }
+}
